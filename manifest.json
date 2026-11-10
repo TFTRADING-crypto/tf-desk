@@ -1,7 +1,6 @@
 {
   "name": "Grok Bot Desk",
   "short_name": "Desk",
-  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#000000",

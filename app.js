@@ -1,39 +1,11 @@
 /* Grok Bot desk app. Plain JS. Every FOMO URL shown here comes from the server (links.py). */
 (function () {
   'use strict';
-  const BUILD = '202611091957';
+  const BUILD = '202611101035';
   const $ = (s, el) => (el || document).querySelector(s);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const reduced = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // ---- token / data path from the URL fragment, then localStorage ----
-  // Parse #t= / #d= even when mixed with #/routes. Persist so the home-screen icon works without the fragment.
-  (function ingestAuth() {
-    const h = location.hash || '';
-    const qs = new URLSearchParams(location.search || '');
-    let changed = false;
-    let route = '#/home';
-    if (h.startsWith('#/')) route = h;
-    // Query params survive Telegram → Safari handoff better than fragments alone.
-    if (qs.get('t')) { localStorage.setItem('desk_token', qs.get('t')); localStorage.removeItem('desk_data'); changed = true; }
-    if (qs.get('d')) { localStorage.setItem('desk_data', qs.get('d')); localStorage.removeItem('desk_token'); changed = true; }
-    let m = h.match(/(?:^#|[?&])t=([^&\/]+)/);
-    if (m) { localStorage.setItem('desk_token', decodeURIComponent(m[1])); localStorage.removeItem('desk_data'); changed = true; }
-    m = h.match(/(?:^#|[?&])d=([^&\/]+)/);
-    if (m) { localStorage.setItem('desk_data', decodeURIComponent(m[1])); localStorage.removeItem('desk_token'); changed = true; }
-    // Pure auth hashes (#d=… / #t=…) become #/home; keep real routes like #/account.
-    if (/^#[dt]=/.test(h)) { changed = true; route = '#/home'; }
-    if (changed || qs.has('v') || true) {
-      const path = location.pathname.endsWith('/') || location.pathname.endsWith('.html')
-        ? location.pathname : (location.pathname + '/');
-      const keep = new URLSearchParams();
-      keep.set('v', qs.get('v') || BUILD);
-      history.replaceState(null, '', path + '?' + keep.toString() + (route.startsWith('#') ? route : '#/home'));
-    }
-  })();
-  const TOKEN = () => localStorage.getItem('desk_token');
-  const DATA = () => localStorage.getItem('desk_data');
-  const PLAN_B = () => !TOKEN() && !!DATA();
   // Directory of this app on GitHub Pages project sites (…/tf-desk/…), never the host root.
   function appDir() {
     let p = location.pathname || '/';
@@ -41,6 +13,55 @@
     if (!p.endsWith('/')) p += '/';
     return p;
   }
+
+  // ---- token / data path from query or hash, then localStorage ----
+  // Keep ?d= in the visible URL: iOS Add to Home Screen saves the current URL, and
+  // the home-screen app has separate storage from Safari/Telegram. Fragments are
+  // often dropped by Telegram's in-app browser or by a trailing-slash redirect.
+  (function ingestAuth() {
+    const h = location.hash || '';
+    const qs = new URLSearchParams(location.search || '');
+    let route = '#/home';
+    if (h.startsWith('#/')) route = h;
+    if (qs.get('t')) { localStorage.setItem('desk_token', qs.get('t')); localStorage.removeItem('desk_data'); }
+    if (qs.get('d')) { localStorage.setItem('desk_data', qs.get('d')); localStorage.removeItem('desk_token'); }
+    let m = h.match(/(?:^#|[?&])t=([^&\/]+)/);
+    if (m) { localStorage.setItem('desk_token', decodeURIComponent(m[1])); localStorage.removeItem('desk_data'); }
+    m = h.match(/(?:^#|[?&])d=([^&\/]+)/);
+    if (m) { localStorage.setItem('desk_data', decodeURIComponent(m[1])); localStorage.removeItem('desk_token'); }
+    if (/^#[dt]=/.test(h)) route = '#/home';
+    const path = location.pathname.endsWith('/') || location.pathname.endsWith('.html')
+      ? location.pathname : (location.pathname + '/');
+    const keep = new URLSearchParams();
+    keep.set('v', qs.get('v') || BUILD);
+    const d = localStorage.getItem('desk_data');
+    const tok = localStorage.getItem('desk_token');
+    if (d) keep.set('d', d);
+    else if (tok) keep.set('t', tok);
+    history.replaceState(null, '', path + '?' + keep.toString() + (route.startsWith('#') ? route : '#/home'));
+  })();
+  const TOKEN = () => localStorage.getItem('desk_token');
+  const DATA = () => localStorage.getItem('desk_data');
+  const PLAN_B = () => !TOKEN() && !!DATA();
+  function applyManifest() {
+    try {
+      const d = DATA();
+      const start = appDir() + '?v=' + encodeURIComponent(BUILD) + (d ? '&d=' + encodeURIComponent(d) : '') + '#/home';
+      const man = {
+        name: 'Grok Bot Desk', short_name: 'Desk', start_url: start, scope: appDir(),
+        display: 'standalone', background_color: '#000000', theme_color: '#000000',
+        icons: [
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }
+        ]
+      };
+      const blob = new Blob([JSON.stringify(man)], { type: 'application/json' });
+      let link = document.querySelector('link[rel="manifest"]');
+      if (!link) { link = document.createElement('link'); link.rel = 'manifest'; document.head.appendChild(link); }
+      link.setAttribute('href', URL.createObjectURL(blob));
+    } catch (_) {}
+  }
+  applyManifest();
   function dataBase() {
     const d = DATA();
     if (!d) throw new Error('missing data path · reopen the app link from Telegram');
@@ -56,6 +77,11 @@
   async function api(path, opt) {
     opt = opt || {};
     let url = path, headers = { 'Content-Type': 'application/json' };
+    if (!TOKEN() && !DATA()) {
+      const e = new Error('missing data path · reopen the Telegram link');
+      e.missing = true;
+      throw e;
+    }
     if (PLAN_B()) {
       const base = dataBase();
       if (opt.method && opt.method !== 'GET') throw new Error('read-only (plan B): use Telegram commands');
@@ -168,8 +194,18 @@
     const v = $('#view');
     if (!S.state) v.innerHTML = skelHome();
     try {
-      const [st, ch, ac] = await Promise.all([api('/api/state'), api('/api/chart?range=' + S.range), api('/api/activity')]);
-      S.state = st; S.chart = ch; S.activity = ac; ok();
+      // Only state.json is essential; chart/activity may 404 without going offline.
+      const st = await api('/api/state');
+      S.state = st;
+      const settled = await Promise.allSettled([
+        api('/api/chart?range=' + S.range),
+        api('/api/activity'),
+      ]);
+      if (settled[0].status === 'fulfilled') S.chart = settled[0].value;
+      else S.chart = S.chart || { points: [], marks: [], start: 0 };
+      if (settled[1].status === 'fulfilled') S.activity = settled[1].value;
+      else S.activity = S.activity || { rows: [] };
+      ok();
     } catch (e) { fail(e); if (!S.state) return; }
     if (!location.hash.startsWith('#/home') && location.hash) return;
     drawHome();
@@ -191,7 +227,7 @@
       <div class="carousel" id="cards"></div>
       <div class="section-h"><h2>Activity</h2><a href="#/activity">See all</a></div>
       <div class="list" id="act5"></div></div>`;
-      $('#ranges').onclick = e => { const r = e.target.dataset.r; if (r) { S.range = r; api('/api/chart?range=' + r).then(c => { S.chart = c; drawHome(); }).catch(fail); } };
+      $('#ranges').onclick = e => { const r = e.target.dataset.r; if (r) { S.range = r; api('/api/chart?range=' + r).then(c => { S.chart = c; drawHome(); }).catch(() => { S.chart = S.chart || { points: [], marks: [], start: 0 }; drawHome(); }); } };
       $('#btn-search').onclick = () => { const s = $('#search'); s.hidden = !s.hidden; if (!s.hidden) $('#search-in').focus(); };
       $('#search-in').oninput = debounce(async e => {
         const q = e.target.value.trim(); if (!q) { $('#search-res').innerHTML = ''; return; }
@@ -221,13 +257,14 @@
     $('#mult').textContent = st.multiplier.toFixed(2) + '×';
     $('#bell-dot').hidden = !st.unread;
     document.querySelectorAll('#ranges button').forEach(b => b.classList.toggle('on', b.dataset.r === S.range));
-    const flat = !(S.chart.marks || []).length && new Set((S.chart.points || []).map(p => p[1])).size <= 1;
+    const chart = S.chart || { points: [], marks: [], start: 0 };
+    const flat = !(chart.marks || []).length && new Set((chart.points || []).map(p => p[1])).size <= 1;
     $('#chart-empty').hidden = !flat;
-    Charts.line($('#line'), flat ? { points: [], marks: [], start: S.chart.start } : S.chart);
+    Charts.line($('#line'), flat ? { points: [], marks: [], start: chart.start } : chart);
     $('#agents-h').textContent = `Agents · ${st.agents.filter(a => a.running && a.alive).length} running`;
     $('#cards').innerHTML = st.agents.map(agentCard).join('');
     drawCardCanvases();
-    const rows = S.activity.rows.slice(0, 5);
+    const rows = ((S.activity && S.activity.rows) || []).slice(0, 5);
     $('#act5').innerHTML = rows.length ? rows.map(actRow).join('') : `<div class="empty">Nothing yet tonight</div>`;
   }
   function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
@@ -280,7 +317,8 @@
     let st, decs;
     try {
       st = await api('/api/state'); S.state = st;
-      decs = await Promise.all(st.agents.map(a => api(`/api/agents/${a.name}/decisions`)));
+      if (PLAN_B()) decs = st.agents.map(a => ({ decisions: S['dec_' + a.name] || [] }));
+      else decs = await Promise.all(st.agents.map(a => api(`/api/agents/${a.name}/decisions`)));
       ok();
     } catch (e) { fail(e); if (!S.state) return; st = S.state; decs = st.agents.map(a => ({ decisions: S['dec_' + a.name] || [] })); }
     if (!location.hash.startsWith('#/agents')) return;
@@ -305,7 +343,8 @@
     const v = $('#view');
     v.innerHTML = `<h1 class="page-title">Activity</h1><div class="list"><div class="skel" style="height:400px"></div></div>`;
     let rows = [], next = null;
-    try { const r = await api('/api/activity'); rows = r.rows; next = r.next; S.activity = r; ok(); } catch (e) { fail(e); if (!S.activity) return; rows = S.activity.rows; }
+    try { const r = await api('/api/activity'); rows = r.rows; next = r.next; S.activity = r; } catch (e) { S.activity = S.activity || { rows: [] }; rows = S.activity.rows; }
+    if (S.state) ok();
     const draw = () => { v.innerHTML = `<h1 class="page-title">Activity</h1><div class="list">${rows.length ? rows.map(actRow).join('') : '<div class="empty">Nothing yet tonight</div>'}</div>${next ? '<div style="text-align:center"><button class="link-btn" id="more">Load more</button></div>' : ''}`;
       const mo = $('#more'); if (mo) mo.onclick = async () => { const r = await api('/api/activity?before=' + next); rows = rows.concat(r.rows); next = r.next; draw(); }; };
     if (location.hash.startsWith('#/activity')) draw();
@@ -316,7 +355,7 @@
     const sh = $('#sheet');
     sh.innerHTML = `<button class="back" onclick="history.back()">‹ Back</button><div class="skel" style="height:40px;margin:8px 16px"></div><div class="skel" style="height:80px;margin:8px 16px"></div><div class="skel" style="height:260px;margin:8px 16px"></div>`;
     let c;
-    try { c = await api('/api/coin/' + encodeURIComponent(mint)); S['coin_' + mint] = c; ok(); } catch (e) { fail(e); c = S['coin_' + mint]; if (!c) return; }
+    try { c = await api('/api/coin/' + encodeURIComponent(mint)); S['coin_' + mint] = c; } catch (e) { c = S['coin_' + mint]; if (!c) { sh.innerHTML = '<button class="back" onclick="history.back()">‹ Back</button><div class="empty" style="padding-top:80px">No snapshot for this coin yet</div>'; return; } }
     if (!location.hash.startsWith('#/coin/')) return;
     const p = c.position, x = c.exit;
     sh.innerHTML = `<button class="back" onclick="history.back()">‹ Back</button>
@@ -342,7 +381,7 @@
     const sh = $('#sheet');
     sh.innerHTML = `<button class="back" onclick="history.back()">‹ Back</button><div class="skel" style="height:330px;width:240px;margin:20px auto;border-radius:120px"></div><div class="list"><div class="skel" style="height:300px"></div></div>`;
     let a;
-    try { a = await api('/api/audit/' + encodeURIComponent(mint)); S['audit_' + mint] = a; ok(); } catch (e) { fail(e); a = S['audit_' + mint]; if (!a) return; }
+    try { a = await api('/api/audit/' + encodeURIComponent(mint)); S['audit_' + mint] = a; } catch (e) { a = S['audit_' + mint]; if (!a) { sh.innerHTML = '<button class="back" onclick="history.back()">‹ Back</button><div class="empty" style="padding-top:80px">No snapshot for this coin yet</div>'; return; } }
     if (!location.hash.startsWith('#/audit/')) return;
     if (!a.layers.length) {
       sh.innerHTML = `<button class="back" onclick="history.back()">‹ Back</button><div class="verdict-h">${esc(a.name)}</div><div class="empty" style="padding-top:80px">No coin taken apart yet</div>
@@ -388,7 +427,12 @@
     const v = $('#view');
     v.innerHTML = `<h1 class="page-title">Account</h1><div class="list"><div class="skel" style="height:200px"></div></div><div class="list" style="margin-top:14px"><div class="skel" style="height:400px"></div></div>`;
     let a;
-    try { a = await api('/api/account'); S.account = a; ok(); } catch (e) { fail(e); a = S.account; if (!a) return; }
+    try { a = await api('/api/account'); S.account = a; } catch (e) {
+      a = S.account;
+      if (!a && S.state) a = { mode: S.state.mode, stack: S.state.balance, ticket: null, profile_url: '#', fomo_handle: '', telegram: { bot: '', connected: false }, plan: 'B', groups: {}, SIGNUP_URL: '' };
+      if (!a) { fail(e); return; }
+    }
+    if (S.state || S.account) ok();
     if (!location.hash.startsWith('#/account')) return;
     const standalone = window.navigator.standalone || matchMedia('(display-mode: standalone)').matches;
     const ro = PLAN_B();
